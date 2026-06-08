@@ -15,6 +15,8 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+        with:
+          persist-credentials: true
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -25,14 +27,41 @@ jobs:
         run: |
           pip install -r requirements.txt
 
+      - name: Ensure files exist
+        run: |
+          mkdir -p results
+          touch scanner_state.json
+
+      - name: Show files before scan
+        run: |
+          pwd
+          ls -la
+          echo "Results folder:"
+          ls -la results || true
+          echo "Projects file:"
+          cat frog_projects.json || true
+
       - name: Run scanner once
         run: |
           python scanner.py
+
+      - name: Show files after scan
+        run: |
+          echo "Results folder after scan:"
+          ls -la results || true
+          echo "Live file:"
+          cat results/scanner_live.json || true
+          echo "Scanner state:"
+          cat scanner_state.json || true
+          echo "Git status:"
+          git status
 
       - name: Commit updated results
         run: |
           git config user.name "frog-scanner"
           git config user.email "frog-scanner@users.noreply.github.com"
-          git add results scanner_state.json
+          git add results
+          git add scanner_state.json || true
+          git status
           git commit -m "update scanner results" || echo "No changes to commit"
           git push

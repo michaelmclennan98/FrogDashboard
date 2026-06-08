@@ -839,7 +839,7 @@ def main():
 
     print("=" * 90)
     print(f"{now()} | FROG SCANNER STARTED")
-    print(f"{now()} | GitHub Actions live mode: scan projects once then stop")
+    print(f"{now()} | ONE PROJECT ONLY MODE")
     print(f"{now()} | Reading projects from {SAVE_FILE}")
     print(f"{now()} | Saving results into {RESULTS_DIR}/")
     print("=" * 90)
@@ -856,14 +856,13 @@ def main():
         "last_completed_project": "",
         "last_completed_keyword": "",
         "total_scanned_this_run": 0,
-        "message": "Scanner starting",
+        "message": "Scanner starting in ONE PROJECT ONLY mode",
     })
 
     git_commit_live_update("live scanner starting")
 
     if not projects:
         print(f"{now()} | No projects found. Exiting.")
-
         save_live_status({
             "status": "no_projects",
             "current_project": "",
@@ -873,56 +872,67 @@ def main():
             "total_scanned_this_run": 0,
             "message": "No projects found",
         })
-
         git_commit_live_update("live no projects")
         return
 
-    for project, keywords in projects.items():
-        if not isinstance(keywords, list):
-            print(f"{now()} | Skipping {project}: keywords not a list")
-            continue
+    first_project = list(projects.keys())[0]
+    keywords = projects[first_project]
 
-        try:
-            scan_project(project, keywords, state, global_counter)
-        except Exception as e:
-            print(f"{now()} | PROJECT ERROR {project}: {repr(e)}")
-            print(traceback.format_exc())
+    print(f"{now()} | FIRST PROJECT SELECTED: {first_project}")
 
-            state[project] = {
-                "last_scanned": now_stamp(),
-                "status": f"ERROR {repr(e)}",
-            }
+    if not isinstance(keywords, list):
+        print(f"{now()} | First project keywords not a list. Exiting.")
+        save_live_status({
+            "status": "error",
+            "current_project": first_project,
+            "current_keyword": "",
+            "last_completed_project": "",
+            "last_completed_keyword": "",
+            "total_scanned_this_run": 0,
+            "message": f"First project {first_project} keywords are not a list",
+        })
+        git_commit_live_update("live first project error")
+        return
 
-            save_state(state)
+    try:
+        scan_project(first_project, keywords, state, global_counter)
+    except Exception as e:
+        print(f"{now()} | PROJECT ERROR {first_project}: {repr(e)}")
+        print(traceback.format_exc())
 
-            save_live_status({
-                "status": "error",
-                "current_project": project,
-                "current_keyword": "",
-                "last_completed_project": "",
-                "last_completed_keyword": "",
-                "total_scanned_this_run": global_counter["total"],
-                "message": f"Project error {project}: {repr(e)}",
-            })
+        state[first_project] = {
+            "last_scanned": now_stamp(),
+            "status": f"ERROR {repr(e)}",
+        }
 
-            git_commit_live_update(f"live error {make_safe_filename(project)}")
+        save_state(state)
 
-        print(f"{now()} | Project cooldown {PROJECT_COOLDOWN_SECONDS}s")
-        time.sleep(PROJECT_COOLDOWN_SECONDS)
+        save_live_status({
+            "status": "error",
+            "current_project": first_project,
+            "current_keyword": "",
+            "last_completed_project": "",
+            "last_completed_keyword": "",
+            "total_scanned_this_run": global_counter["total"],
+            "message": f"Project error {first_project}: {repr(e)}",
+        })
+
+        git_commit_live_update(f"live error {make_safe_filename(first_project)}")
+        return
 
     save_live_status({
         "status": "finished",
         "current_project": "",
         "current_keyword": "",
-        "last_completed_project": "",
+        "last_completed_project": first_project,
         "last_completed_keyword": "",
         "total_scanned_this_run": global_counter["total"],
-        "message": "All projects scanned once. Scanner finished.",
+        "message": f"Finished first project only: {first_project}",
     })
 
-    git_commit_live_update("live scanner finished")
+    git_commit_live_update("live scanner finished first project only")
 
-    print(f"{now()} | All projects scanned once. Exiting.")
+    print(f"{now()} | Finished first project only: {first_project}")
 
 
 if __name__ == "__main__":

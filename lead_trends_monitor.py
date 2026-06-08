@@ -479,15 +479,8 @@ def live_status_debug_text(live):
 def show_live_status_card():
     live = load_live_status()
 
-    st.markdown(
-        """
-        <meta http-equiv="refresh" content="60">
-        """,
-        unsafe_allow_html=True
-    )
-
     st.subheader("🟢 Live Scanner Status")
-    st.caption("This page auto-refreshes every 60 seconds. The scanner only runs when GitHub Actions is running.")
+    st.caption("No auto-refresh. Use your browser refresh if you want the newest scanner status.")
 
     if not live:
         st.warning("No live scanner status file found yet.")
@@ -555,7 +548,6 @@ def show_live_status_card():
             json.dumps(live, indent=2),
             language="json"
         )
-
 
 def show_live_results(projects):
     st.title("📡 Live Project Results")

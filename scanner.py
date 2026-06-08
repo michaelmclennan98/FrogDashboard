@@ -29,6 +29,8 @@ KEYWORDS_PER_PROJECT_PER_ROUND = 10
 
 PROJECT_COOLDOWN_SECONDS = 300
 
+REQUEST_TIMEOUT_SECONDS = 20
+
 
 def ensure_dirs():
     os.makedirs(RESULTS_DIR, exist_ok=True)
@@ -95,6 +97,7 @@ def save_state(state):
 
 def save_live_status(data):
     ensure_dirs()
+
     data["last_updated"] = now_stamp()
 
     with open(LIVE_FILE, "w", encoding="utf-8") as f:
@@ -428,16 +431,33 @@ def google_trends_fetch(keyword, live_update=None):
         while True:
             heartbeat("sending explore request")
 
-            r = requests.get(
-                "https://trends.google.com/trends/api/explore",
-                params={
-                    "hl": "en-GB",
-                    "tz": "0",
-                    "req": json.dumps(payload)
-                },
-                headers=make_headers(),
-                timeout=60
-            )
+            try:
+                r = requests.get(
+                    "https://trends.google.com/trends/api/explore",
+                    params={
+                        "hl": "en-GB",
+                        "tz": "0",
+                        "req": json.dumps(payload)
+                    },
+                    headers=make_headers(),
+                    timeout=REQUEST_TIMEOUT_SECONDS
+                )
+            except requests.exceptions.Timeout as e:
+                heartbeat(f"explore request timed out after {REQUEST_TIMEOUT_SECONDS}s")
+                return build_no_data_with_ai(
+                    keyword,
+                    f"EXPLORE TIMEOUT {repr(e)}",
+                    "EXPLORE_TIMEOUT",
+                    result_meta
+                )
+            except requests.exceptions.RequestException as e:
+                heartbeat(f"explore request failed {repr(e)}")
+                return build_no_data_with_ai(
+                    keyword,
+                    f"EXPLORE REQUEST FAILED {repr(e)}",
+                    "EXPLORE_REQUEST",
+                    result_meta
+                )
 
             result_meta["HTTP Explore"] = str(r.status_code)
 
@@ -513,17 +533,34 @@ def google_trends_fetch(keyword, live_update=None):
         while True:
             heartbeat("sending multiline request")
 
-            r2 = requests.get(
-                "https://trends.google.com/trends/api/widgetdata/multiline",
-                params={
-                    "hl": "en-GB",
-                    "tz": "0",
-                    "req": json.dumps(request_obj),
-                    "token": token
-                },
-                headers=make_headers(),
-                timeout=60
-            )
+            try:
+                r2 = requests.get(
+                    "https://trends.google.com/trends/api/widgetdata/multiline",
+                    params={
+                        "hl": "en-GB",
+                        "tz": "0",
+                        "req": json.dumps(request_obj),
+                        "token": token
+                    },
+                    headers=make_headers(),
+                    timeout=REQUEST_TIMEOUT_SECONDS
+                )
+            except requests.exceptions.Timeout as e:
+                heartbeat(f"multiline request timed out after {REQUEST_TIMEOUT_SECONDS}s")
+                return build_no_data_with_ai(
+                    keyword,
+                    f"MULTILINE TIMEOUT {repr(e)}",
+                    "MULTILINE_TIMEOUT",
+                    result_meta
+                )
+            except requests.exceptions.RequestException as e:
+                heartbeat(f"multiline request failed {repr(e)}")
+                return build_no_data_with_ai(
+                    keyword,
+                    f"MULTILINE REQUEST FAILED {repr(e)}",
+                    "MULTILINE_REQUEST",
+                    result_meta
+                )
 
             result_meta["HTTP Multiline"] = str(r2.status_code)
 
@@ -604,7 +641,7 @@ def google_trends_fetch(keyword, live_update=None):
         print(f"{now()} | [{keyword}] ERROR {repr(e)}")
         print(traceback.format_exc())
 
-        heartbeat(f"exception {repr(e)}")
+        heartbeat(f"request failed / timed out: {repr(e)}")
 
         return build_no_data_with_ai(
             keyword,

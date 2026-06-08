@@ -91,6 +91,13 @@ def load_live_status():
     return load_json_file(LIVE_FILE, {})
 
 
+def safe_number(value, default=0):
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
 def no_data_result(keyword="UNKNOWN", reason="NO DATA", stage="UNKNOWN"):
     return {
         "Keyword": keyword,
@@ -445,6 +452,30 @@ def google_trends_fetch(keyword, min_delay, max_delay, max_429_retries, debug_ca
         return build_no_data_with_ai(keyword, err, "EXCEPTION", result_meta)
 
 
+def live_status_debug_text(live):
+    if not live:
+        return "No scanner_live.json found yet."
+
+    lines = [
+        f"Status: {live.get('status', 'unknown')}",
+        f"Message: {live.get('message', '')}",
+        f"Current project: {live.get('current_project', '')}",
+        f"Current keyword: {live.get('current_keyword', '')}",
+        f"Last completed project: {live.get('last_completed_project', '')}",
+        f"Last completed keyword: {live.get('last_completed_keyword', '')}",
+        f"Last completed status: {live.get('last_completed_status', '')}",
+        f"Last completed latest: {live.get('last_completed_latest', '')}",
+        f"Last completed rise: {live.get('last_completed_rise', '')}",
+        f"Project existing results: {live.get('project_existing_results', '')}",
+        f"Project scanning this round: {live.get('project_scanning_this_round', '')}",
+        f"Project scanned this round: {live.get('project_scanned_this_round', '')}",
+        f"Total scanned this run: {live.get('total_scanned_this_run', '')}",
+        f"Last updated: {live.get('last_updated', '')}",
+    ]
+
+    return "\n".join(lines)
+
+
 def show_live_status_card():
     live = load_live_status()
 
@@ -456,10 +487,13 @@ def show_live_status_card():
     )
 
     st.subheader("🟢 Live Scanner Status")
-    st.caption("This page auto-refreshes every 60 seconds.")
+    st.caption("This page auto-refreshes every 60 seconds. The scanner only runs when GitHub Actions is running.")
 
     if not live:
-        st.info("No live scanner status yet. Run the GitHub Action first.")
+        st.warning("No live scanner status file found yet.")
+        st.info("Go to GitHub → FrogDashboard → Actions → Frog Scanner → Run workflow.")
+        st.subheader("🧪 Live Debug Screen")
+        st.code("No results/scanner_live.json file exists yet.", language="text")
         return
 
     status = live.get("status", "unknown")
@@ -487,12 +521,15 @@ def show_live_status_card():
         st.write("Last updated")
         st.write(last_updated)
 
+    st.write("Message")
+    st.info(message or "No scanner message yet.")
+
     if current_keyword:
         st.success(f"Currently scanning: {current_keyword}")
     elif last_keyword:
         st.info(f"Last completed: {last_keyword}")
     else:
-        st.info(message or "Waiting for scanner activity")
+        st.info("No current keyword yet.")
 
     if last_project or last_keyword:
         st.write(f"Last completed project: {last_project or 'None'}")
@@ -505,6 +542,19 @@ def show_live_status_card():
     if top_5:
         st.write("Top 5 in current project so far")
         st.dataframe(pd.DataFrame(top_5), use_container_width=True)
+
+    st.subheader("🧪 Live Debug Screen")
+
+    st.code(
+        live_status_debug_text(live),
+        language="text"
+    )
+
+    with st.expander("Raw scanner_live.json"):
+        st.code(
+            json.dumps(live, indent=2),
+            language="json"
+        )
 
 
 def show_live_results(projects):
@@ -571,8 +621,21 @@ def show_live_results(projects):
             )
 
             st.write("Top 10")
+            columns_to_show = [
+                "Keyword",
+                "Latest",
+                "Recent Avg",
+                "Rise %",
+                "Demand",
+                "Viral Score",
+                "Status",
+                "Priority"
+            ]
+
+            existing_columns = [c for c in columns_to_show if c in usable_df.columns]
+
             st.dataframe(
-                usable_df[["Keyword", "Latest", "Recent Avg", "Rise %", "Demand", "Viral Score", "Status", "Priority"]].head(10),
+                usable_df[existing_columns].head(10),
                 use_container_width=True
             )
 
@@ -810,6 +873,6 @@ Reason: {result['Debug Reason']}
         st.download_button(
             "Download Frog Report 🐸",
             csv,
-            f"{safe_project}_frog_report.csv",
+            f"{make_safe_filename(project)}_frog_report.csv",
             "text/csv"
         )

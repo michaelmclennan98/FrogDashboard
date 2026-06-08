@@ -95,7 +95,6 @@ def save_state(state):
 
 def save_live_status(data):
     ensure_dirs()
-
     data["last_updated"] = now_stamp()
 
     with open(LIVE_FILE, "w", encoding="utf-8") as f:
@@ -110,7 +109,10 @@ def git_commit_live_update(message):
         subprocess.run(["git", "config", "user.name", "frog-scanner"], check=False)
         subprocess.run(["git", "config", "user.email", "frog-scanner@users.noreply.github.com"], check=False)
 
-        subprocess.run(["git", "add", RESULTS_DIR, STATE_FILE], check=False)
+        subprocess.run(["git", "add", RESULTS_DIR], check=False)
+
+        if os.path.exists(STATE_FILE):
+            subprocess.run(["git", "add", STATE_FILE], check=False)
 
         commit = subprocess.run(
             ["git", "commit", "-m", message],
@@ -385,8 +387,13 @@ def build_no_data_with_ai(keyword, reason, stage, result_meta):
     return result
 
 
-def google_trends_fetch(keyword):
+def google_trends_fetch(keyword, live_update=None):
     keyword = clean_keyword(keyword)
+
+    def heartbeat(stage):
+        print(f"{now()} | [{keyword}] HEARTBEAT: {stage}")
+        if live_update:
+            live_update(stage)
 
     result_meta = {
         "HTTP Explore": "",
@@ -413,13 +420,13 @@ def google_trends_fetch(keyword):
 
     try:
         wait = random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS)
-        print(f"{now()} | [{keyword}] Sleeping before explore {round(wait, 1)}s")
+        heartbeat(f"sleeping before explore for {round(wait, 1)}s")
         time.sleep(wait)
 
         explore_retry = 0
 
         while True:
-            print(f"{now()} | [{keyword}] Explore GET sending")
+            heartbeat("sending explore request")
 
             r = requests.get(
                 "https://trends.google.com/trends/api/explore",
@@ -438,9 +445,10 @@ def google_trends_fetch(keyword):
 
             if r.status_code == 429:
                 explore_retry += 1
-                print(f"{now()} | [{keyword}] Explore 429 retry {explore_retry}/{MAX_429_RETRIES}")
+                heartbeat(f"explore 429 retry {explore_retry}/{MAX_429_RETRIES}")
 
                 if explore_retry > MAX_429_RETRIES:
+                    heartbeat("explore 429 retries exhausted")
                     return build_no_data_with_ai(
                         keyword,
                         "EXPLORE 429 RATE LIMITED",
@@ -449,11 +457,12 @@ def google_trends_fetch(keyword):
                     )
 
                 cooldown = random.uniform(240, 600)
-                print(f"{now()} | [{keyword}] 429 cooldown {round(cooldown, 1)}s")
+                heartbeat(f"explore 429 cooldown for {round(cooldown, 1)}s")
                 time.sleep(cooldown)
                 continue
 
             if r.status_code != 200:
+                heartbeat(f"explore bad status {r.status_code}")
                 return build_no_data_with_ai(
                     keyword,
                     f"EXPLORE BAD STATUS {r.status_code}",
@@ -462,6 +471,8 @@ def google_trends_fetch(keyword):
                 )
 
             break
+
+        heartbeat("parsing explore response")
 
         explore = parse_google_json(r.text, "EXPLORE")
 
@@ -473,6 +484,7 @@ def google_trends_fetch(keyword):
         )
 
         if not timeseries_widget:
+            heartbeat("no timeseries widget")
             return build_no_data_with_ai(
                 keyword,
                 "NO TIMESERIES WIDGET",
@@ -484,6 +496,7 @@ def google_trends_fetch(keyword):
         request_obj = timeseries_widget.get("request")
 
         if not token or not request_obj:
+            heartbeat("missing token or request")
             return build_no_data_with_ai(
                 keyword,
                 "MISSING TOKEN OR REQUEST",
@@ -492,13 +505,13 @@ def google_trends_fetch(keyword):
             )
 
         extra_wait = random.uniform(MULTILINE_MIN_DELAY, MULTILINE_MAX_DELAY)
-        print(f"{now()} | [{keyword}] Sleeping before multiline {round(extra_wait, 1)}s")
+        heartbeat(f"sleeping before multiline for {round(extra_wait, 1)}s")
         time.sleep(extra_wait)
 
         multiline_retry = 0
 
         while True:
-            print(f"{now()} | [{keyword}] Multiline GET sending")
+            heartbeat("sending multiline request")
 
             r2 = requests.get(
                 "https://trends.google.com/trends/api/widgetdata/multiline",
@@ -518,9 +531,10 @@ def google_trends_fetch(keyword):
 
             if r2.status_code == 429:
                 multiline_retry += 1
-                print(f"{now()} | [{keyword}] Multiline 429 retry {multiline_retry}/{MAX_429_RETRIES}")
+                heartbeat(f"multiline 429 retry {multiline_retry}/{MAX_429_RETRIES}")
 
                 if multiline_retry > MAX_429_RETRIES:
+                    heartbeat("multiline 429 retries exhausted")
                     return build_no_data_with_ai(
                         keyword,
                         "MULTILINE 429 RATE LIMITED",
@@ -529,11 +543,12 @@ def google_trends_fetch(keyword):
                     )
 
                 cooldown = random.uniform(240, 600)
-                print(f"{now()} | [{keyword}] Multiline 429 cooldown {round(cooldown, 1)}s")
+                heartbeat(f"multiline 429 cooldown for {round(cooldown, 1)}s")
                 time.sleep(cooldown)
                 continue
 
             if r2.status_code != 200:
+                heartbeat(f"multiline bad status {r2.status_code}")
                 return build_no_data_with_ai(
                     keyword,
                     f"MULTILINE BAD STATUS {r2.status_code}",
@@ -543,6 +558,8 @@ def google_trends_fetch(keyword):
 
             break
 
+        heartbeat("parsing multiline response")
+
         trend_data = parse_google_json(r2.text, "MULTILINE")
 
         timeline = trend_data.get("default", {}).get("timelineData", [])
@@ -550,6 +567,7 @@ def google_trends_fetch(keyword):
         result_meta["Timeline Points"] = len(timeline)
 
         if not timeline:
+            heartbeat("empty timeline no search data")
             return build_no_data_with_ai(
                 keyword,
                 "NO SEARCH DATA EMPTY TIMELINE",
@@ -568,6 +586,8 @@ def google_trends_fetch(keyword):
         result_meta["First Values"] = ", ".join(str(int(x)) for x in values[:8])
         result_meta["Last Values"] = ", ".join(str(int(x)) for x in values[-8:])
 
+        heartbeat("analysing values")
+
         analysed = analyse(keyword, values)
         analysed.update(result_meta)
         analysed.update(ai_hook(keyword, analysed))
@@ -576,11 +596,15 @@ def google_trends_fetch(keyword):
             f"{now()} | [{keyword}] SUCCESS Latest={analysed['Latest']} Recent={analysed['Recent Avg']} Rise={analysed['Rise %']}"
         )
 
+        heartbeat("keyword completed successfully")
+
         return analysed
 
     except Exception as e:
         print(f"{now()} | [{keyword}] ERROR {repr(e)}")
         print(traceback.format_exc())
+
+        heartbeat(f"exception {repr(e)}")
 
         return build_no_data_with_ai(
             keyword,
@@ -610,7 +634,6 @@ def pick_keywords_for_project(project, keywords, existing_results, state):
 
     if not remaining:
         print(f"{now()} | [{project}] All keywords already scanned. Restarting project cycle.")
-        done_keywords = set()
         existing_results.clear()
         remaining = clean_keywords
 
@@ -622,7 +645,6 @@ def scan_project(project, keywords, state, global_counter):
     print(f"{now()} | PROJECT START: {project}")
 
     results = load_project_results(project)
-
     to_scan = pick_keywords_for_project(project, keywords, results, state)
 
     print(f"{now()} | [{project}] Existing results: {len(results)}")
@@ -649,6 +671,24 @@ def scan_project(project, keywords, state, global_counter):
     for index, keyword in enumerate(to_scan, start=1):
         print(f"{now()} | [{project}] Keyword {index}/{len(to_scan)}: {keyword}")
 
+        def live_update(stage):
+            save_live_status({
+                "status": "running",
+                "current_project": project,
+                "current_keyword": keyword,
+                "last_completed_project": "",
+                "last_completed_keyword": "",
+                "project_existing_results": len(results),
+                "project_scanning_this_round": len(to_scan),
+                "project_scanned_this_round": scanned_this_round,
+                "total_scanned_this_run": global_counter["total"],
+                "message": f"{stage}: {keyword}",
+            })
+
+            git_commit_live_update(
+                f"heartbeat {make_safe_filename(project)} {make_safe_filename(keyword)}"
+            )
+
         save_live_status({
             "status": "running",
             "current_project": project,
@@ -659,12 +699,12 @@ def scan_project(project, keywords, state, global_counter):
             "project_scanning_this_round": len(to_scan),
             "project_scanned_this_round": scanned_this_round,
             "total_scanned_this_run": global_counter["total"],
-            "message": f"Scanning {keyword}",
+            "message": f"Queued {keyword}",
         })
 
-        git_commit_live_update(f"live scanning {make_safe_filename(project)} {make_safe_filename(keyword)}")
+        git_commit_live_update(f"live queued {make_safe_filename(project)} {make_safe_filename(keyword)}")
 
-        result = google_trends_fetch(keyword)
+        result = google_trends_fetch(keyword, live_update=live_update)
 
         results = [
             r for r in results
@@ -708,6 +748,22 @@ def scan_project(project, keywords, state, global_counter):
 
         if index < len(to_scan):
             wait = random.uniform(BETWEEN_KEYWORDS_MIN, BETWEEN_KEYWORDS_MAX)
+
+            save_live_status({
+                "status": "running",
+                "current_project": project,
+                "current_keyword": "",
+                "last_completed_project": project,
+                "last_completed_keyword": keyword,
+                "project_existing_results": len(results),
+                "project_scanning_this_round": len(to_scan),
+                "project_scanned_this_round": scanned_this_round,
+                "total_scanned_this_run": global_counter["total"],
+                "message": f"Between keyword sleep {round(wait, 1)}s",
+            })
+
+            git_commit_live_update(f"live between keywords {make_safe_filename(project)}")
+
             print(f"{now()} | [{project}] Between keyword sleep {round(wait, 1)}s")
             time.sleep(wait)
 

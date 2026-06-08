@@ -6,11 +6,13 @@ import os
 import re
 import requests
 import traceback
+import subprocess
 from datetime import datetime
 
 SAVE_FILE = "frog_projects.json"
 RESULTS_DIR = "results"
 STATE_FILE = "scanner_state.json"
+LIVE_FILE = os.path.join(RESULTS_DIR, "scanner_live.json")
 
 MIN_DELAY_SECONDS = 25
 MAX_DELAY_SECONDS = 30
@@ -26,7 +28,6 @@ MAX_429_RETRIES = 3
 KEYWORDS_PER_PROJECT_PER_ROUND = 10
 
 PROJECT_COOLDOWN_SECONDS = 300
-FULL_LOOP_SLEEP_SECONDS = 600
 
 
 def ensure_dirs():
@@ -39,6 +40,10 @@ def now():
 
 def now_stamp():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def is_github_actions():
+    return os.environ.get("GITHUB_ACTIONS", "").lower() == "true"
 
 
 def clean_keyword(k):
@@ -88,6 +93,47 @@ def save_state(state):
         json.dump(state, f, indent=2)
 
 
+def save_live_status(data):
+    ensure_dirs()
+
+    data["last_updated"] = now_stamp()
+
+    with open(LIVE_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+
+def git_commit_live_update(message):
+    if not is_github_actions():
+        return
+
+    try:
+        subprocess.run(["git", "config", "user.name", "frog-scanner"], check=False)
+        subprocess.run(["git", "config", "user.email", "frog-scanner@users.noreply.github.com"], check=False)
+
+        subprocess.run(["git", "add", RESULTS_DIR, STATE_FILE], check=False)
+
+        commit = subprocess.run(
+            ["git", "commit", "-m", message],
+            capture_output=True,
+            text=True
+        )
+
+        if commit.returncode != 0:
+            print(f"{now()} | Git commit skipped: {commit.stdout.strip()} {commit.stderr.strip()}")
+            return
+
+        push = subprocess.run(
+            ["git", "push"],
+            capture_output=True,
+            text=True
+        )
+
+        print(f"{now()} | Git push: {push.stdout.strip()} {push.stderr.strip()}")
+
+    except Exception as e:
+        print(f"{now()} | Git live update failed: {repr(e)}")
+
+
 def project_result_json(project):
     return os.path.join(RESULTS_DIR, f"{make_safe_filename(project)}_results.json")
 
@@ -110,10 +156,7 @@ def load_project_results(project):
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
-        if isinstance(data, list):
-            return data
-
-        return []
+        return data if isinstance(data, list) else []
     except Exception:
         return []
 
@@ -130,7 +173,7 @@ def save_project_results(project, results):
         df.to_csv(csv_path, index=False, encoding="utf-8")
 
 
-def save_project_summary(project, results, scanned_this_round, status):
+def get_usable_sorted(results):
     usable = [
         r for r in results
         if float(r.get("Latest", 0) or 0) > 0
@@ -138,7 +181,7 @@ def save_project_summary(project, results, scanned_this_round, status):
         or float(r.get("Viral Score", 0) or 0) > 0
     ]
 
-    usable_sorted = sorted(
+    return sorted(
         usable,
         key=lambda x: (
             float(x.get("Latest", 0) or 0),
@@ -148,6 +191,10 @@ def save_project_summary(project, results, scanned_this_round, status):
         ),
         reverse=True
     )
+
+
+def save_project_summary(project, results, scanned_this_round, status):
+    usable_sorted = get_usable_sorted(results)
 
     top_keywords = usable_sorted[:50]
 
@@ -161,7 +208,7 @@ def save_project_summary(project, results, scanned_this_round, status):
         "last_scanned": now_stamp(),
         "status": status,
         "total_results": len(results),
-        "usable_results": len(usable),
+        "usable_results": len(usable_sorted),
         "scanned_this_round": scanned_this_round,
         "top_10": usable_sorted[:10],
         "hashtags_top_50": hashtags,
@@ -570,7 +617,7 @@ def pick_keywords_for_project(project, keywords, existing_results, state):
     return remaining[:KEYWORDS_PER_PROJECT_PER_ROUND]
 
 
-def scan_project(project, keywords, state):
+def scan_project(project, keywords, state, global_counter):
     print("=" * 90)
     print(f"{now()} | PROJECT START: {project}")
 
@@ -584,8 +631,38 @@ def scan_project(project, keywords, state):
     scanned_this_round = 0
     status = "OK"
 
+    save_live_status({
+        "status": "running",
+        "current_project": project,
+        "current_keyword": "",
+        "last_completed_project": "",
+        "last_completed_keyword": "",
+        "project_existing_results": len(results),
+        "project_scanning_this_round": len(to_scan),
+        "project_scanned_this_round": 0,
+        "total_scanned_this_run": global_counter["total"],
+        "message": f"Starting project {project}",
+    })
+
+    git_commit_live_update(f"live start {make_safe_filename(project)}")
+
     for index, keyword in enumerate(to_scan, start=1):
         print(f"{now()} | [{project}] Keyword {index}/{len(to_scan)}: {keyword}")
+
+        save_live_status({
+            "status": "running",
+            "current_project": project,
+            "current_keyword": keyword,
+            "last_completed_project": "",
+            "last_completed_keyword": "",
+            "project_existing_results": len(results),
+            "project_scanning_this_round": len(to_scan),
+            "project_scanned_this_round": scanned_this_round,
+            "total_scanned_this_run": global_counter["total"],
+            "message": f"Scanning {keyword}",
+        })
+
+        git_commit_live_update(f"live scanning {make_safe_filename(project)} {make_safe_filename(keyword)}")
 
         result = google_trends_fetch(keyword)
 
@@ -599,6 +676,30 @@ def scan_project(project, keywords, state):
         save_project_results(project, results)
 
         scanned_this_round += 1
+        global_counter["total"] += 1
+
+        save_project_summary(project, results, scanned_this_round, status)
+
+        usable_sorted = get_usable_sorted(results)
+
+        save_live_status({
+            "status": "running",
+            "current_project": project,
+            "current_keyword": "",
+            "last_completed_project": project,
+            "last_completed_keyword": keyword,
+            "last_completed_status": result.get("Status", ""),
+            "last_completed_latest": result.get("Latest", 0),
+            "last_completed_rise": result.get("Rise %", 0),
+            "project_existing_results": len(results),
+            "project_scanning_this_round": len(to_scan),
+            "project_scanned_this_round": scanned_this_round,
+            "total_scanned_this_run": global_counter["total"],
+            "top_5_this_project": usable_sorted[:5],
+            "message": f"Completed {keyword}",
+        })
+
+        git_commit_live_update(f"live completed {make_safe_filename(project)} {make_safe_filename(keyword)}")
 
         if result.get("HTTP Explore") == "429" or result.get("HTTP Multiline") == "429":
             status = "429 COOLDOWN"
@@ -622,6 +723,21 @@ def scan_project(project, keywords, state):
 
     save_state(state)
 
+    save_live_status({
+        "status": status,
+        "current_project": "",
+        "current_keyword": "",
+        "last_completed_project": project,
+        "last_completed_keyword": "",
+        "project_existing_results": len(results),
+        "project_scanning_this_round": len(to_scan),
+        "project_scanned_this_round": scanned_this_round,
+        "total_scanned_this_run": global_counter["total"],
+        "message": f"Finished project {project}",
+    })
+
+    git_commit_live_update(f"live finished {make_safe_filename(project)}")
+
     print(f"{now()} | PROJECT END: {project} | {status}")
 
 
@@ -630,42 +746,90 @@ def main():
 
     print("=" * 90)
     print(f"{now()} | FROG SCANNER STARTED")
+    print(f"{now()} | GitHub Actions live mode: scan projects once then stop")
     print(f"{now()} | Reading projects from {SAVE_FILE}")
     print(f"{now()} | Saving results into {RESULTS_DIR}/")
     print("=" * 90)
 
-    while True:
-        projects = load_projects()
-        state = load_state()
+    projects = load_projects()
+    state = load_state()
 
-        if not projects:
-            print(f"{now()} | No projects found. Sleeping 60s.")
-            time.sleep(60)
+    global_counter = {"total": 0}
+
+    save_live_status({
+        "status": "starting",
+        "current_project": "",
+        "current_keyword": "",
+        "last_completed_project": "",
+        "last_completed_keyword": "",
+        "total_scanned_this_run": 0,
+        "message": "Scanner starting",
+    })
+
+    git_commit_live_update("live scanner starting")
+
+    if not projects:
+        print(f"{now()} | No projects found. Exiting.")
+
+        save_live_status({
+            "status": "no_projects",
+            "current_project": "",
+            "current_keyword": "",
+            "last_completed_project": "",
+            "last_completed_keyword": "",
+            "total_scanned_this_run": 0,
+            "message": "No projects found",
+        })
+
+        git_commit_live_update("live no projects")
+        return
+
+    for project, keywords in projects.items():
+        if not isinstance(keywords, list):
+            print(f"{now()} | Skipping {project}: keywords not a list")
             continue
 
-        for project, keywords in projects.items():
-            if not isinstance(keywords, list):
-                print(f"{now()} | Skipping {project}: keywords not a list")
-                continue
+        try:
+            scan_project(project, keywords, state, global_counter)
+        except Exception as e:
+            print(f"{now()} | PROJECT ERROR {project}: {repr(e)}")
+            print(traceback.format_exc())
 
-            try:
-                scan_project(project, keywords, state)
-            except Exception as e:
-                print(f"{now()} | PROJECT ERROR {project}: {repr(e)}")
-                print(traceback.format_exc())
+            state[project] = {
+                "last_scanned": now_stamp(),
+                "status": f"ERROR {repr(e)}",
+            }
 
-                state[project] = {
-                    "last_scanned": now_stamp(),
-                    "status": f"ERROR {repr(e)}",
-                }
+            save_state(state)
 
-                save_state(state)
+            save_live_status({
+                "status": "error",
+                "current_project": project,
+                "current_keyword": "",
+                "last_completed_project": "",
+                "last_completed_keyword": "",
+                "total_scanned_this_run": global_counter["total"],
+                "message": f"Project error {project}: {repr(e)}",
+            })
 
-            print(f"{now()} | Project cooldown {PROJECT_COOLDOWN_SECONDS}s")
-            time.sleep(PROJECT_COOLDOWN_SECONDS)
+            git_commit_live_update(f"live error {make_safe_filename(project)}")
 
-        print(f"{now()} | Full loop finished. Sleeping {FULL_LOOP_SLEEP_SECONDS}s.")
-        time.sleep(FULL_LOOP_SLEEP_SECONDS)
+        print(f"{now()} | Project cooldown {PROJECT_COOLDOWN_SECONDS}s")
+        time.sleep(PROJECT_COOLDOWN_SECONDS)
+
+    save_live_status({
+        "status": "finished",
+        "current_project": "",
+        "current_keyword": "",
+        "last_completed_project": "",
+        "last_completed_keyword": "",
+        "total_scanned_this_run": global_counter["total"],
+        "message": "All projects scanned once. Scanner finished.",
+    })
+
+    git_commit_live_update("live scanner finished")
+
+    print(f"{now()} | All projects scanned once. Exiting.")
 
 
 if __name__ == "__main__":

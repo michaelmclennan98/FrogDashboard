@@ -14,6 +14,7 @@ st.set_page_config(page_title="🐸 Frog Dashboard 🐸", layout="wide")
 
 SAVE_FILE = "frog_projects.json"
 RESULTS_DIR = "results"
+LIVE_FILE = os.path.join(RESULTS_DIR, "scanner_live.json")
 
 
 def load_projects():
@@ -84,6 +85,10 @@ def load_project_results(project):
 
 def load_project_summary(project):
     return load_json_file(project_summary_path(project), {})
+
+
+def load_live_status():
+    return load_json_file(LIVE_FILE, {})
 
 
 def no_data_result(keyword="UNKNOWN", reason="NO DATA", stage="UNKNOWN"):
@@ -440,14 +445,80 @@ def google_trends_fetch(keyword, min_delay, max_delay, max_429_retries, debug_ca
         return build_no_data_with_ai(keyword, err, "EXCEPTION", result_meta)
 
 
+def show_live_status_card():
+    live = load_live_status()
+
+    st.markdown(
+        """
+        <meta http-equiv="refresh" content="60">
+        """,
+        unsafe_allow_html=True
+    )
+
+    st.subheader("🟢 Live Scanner Status")
+    st.caption("This page auto-refreshes every 60 seconds.")
+
+    if not live:
+        st.info("No live scanner status yet. Run the GitHub Action first.")
+        return
+
+    status = live.get("status", "unknown")
+    current_project = live.get("current_project", "")
+    current_keyword = live.get("current_keyword", "")
+    last_project = live.get("last_completed_project", "")
+    last_keyword = live.get("last_completed_keyword", "")
+    total_scanned = live.get("total_scanned_this_run", 0)
+    last_updated = live.get("last_updated", "Unknown")
+    message = live.get("message", "")
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.metric("Scanner status", status)
+
+    with col2:
+        st.metric("Total scanned this run", total_scanned)
+
+    with col3:
+        st.write("Current project")
+        st.write(current_project or "Not scanning")
+
+    with col4:
+        st.write("Last updated")
+        st.write(last_updated)
+
+    if current_keyword:
+        st.success(f"Currently scanning: {current_keyword}")
+    elif last_keyword:
+        st.info(f"Last completed: {last_keyword}")
+    else:
+        st.info(message or "Waiting for scanner activity")
+
+    if last_project or last_keyword:
+        st.write(f"Last completed project: {last_project or 'None'}")
+        st.write(f"Last completed keyword: {last_keyword or 'None'}")
+        st.write(f"Latest score: {live.get('last_completed_latest', 0)}")
+        st.write(f"Rise %: {live.get('last_completed_rise', 0)}")
+
+    top_5 = live.get("top_5_this_project", [])
+
+    if top_5:
+        st.write("Top 5 in current project so far")
+        st.dataframe(pd.DataFrame(top_5), use_container_width=True)
+
+
 def show_live_results(projects):
     st.title("📡 Live Project Results")
 
+    show_live_status_card()
+
+    st.divider()
+
     if not os.path.exists(RESULTS_DIR):
-        st.warning("No results folder found yet. Run scanner.py first.")
+        st.warning("No results folder found yet. Run scanner.py or GitHub Action first.")
         return
 
-    if st.button("Refresh Live Results 🔄"):
+    if st.button("Refresh Live Results Now 🔄"):
         st.rerun()
 
     if not projects:
